@@ -11,7 +11,7 @@ def main() -> int:
         description="Run one root-like command through miui.mqsas.IMQSNative."
     )
     parser.add_argument("--command", default="whoami")
-    parser.add_argument("--arguments", default="")
+    parser.add_argument("--arguments", default="", nargs="?", const="")
     parser.add_argument("--output", default="/sdcard/mqsas-root.txt")
     parser.add_argument("--timeout", type=int, default=60)
     parser.add_argument("--execute", action="store_true", help="Actually call adb service.")

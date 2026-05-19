@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 
-def build_service_args(command: str, arguments: str, output: str, timeout: int) -> list[str]:
-    return [
-        "adb",
-        "shell",
+def shell_quote(value: str) -> str:
+    if value == "":
+        return "''"
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def build_service_shell_command(command: str, arguments: str, output: str, timeout: int) -> str:
+    parts = [
         "service",
         "call",
         "miui.mqsas.IMQSNative",
@@ -12,15 +16,24 @@ def build_service_args(command: str, arguments: str, output: str, timeout: int) 
         "i32",
         "1",
         "s16",
-        command,
+        shell_quote(command),
         "i32",
         "1",
         "s16",
-        arguments,
+        shell_quote(arguments),
         "s16",
-        output,
+        shell_quote(output),
         "i32",
         str(timeout),
+    ]
+    return " ".join(parts)
+
+
+def build_service_args(command: str, arguments: str, output: str, timeout: int) -> list[str]:
+    return [
+        "adb",
+        "shell",
+        build_service_shell_command(command, arguments, output, timeout),
     ]
 
 
@@ -31,4 +44,3 @@ def build_kernelsu_late_load_args(remote_path: str, log_path: str, timeout: int)
         output=log_path,
         timeout=timeout,
     )
-

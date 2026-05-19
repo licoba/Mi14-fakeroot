@@ -16,6 +16,8 @@ KSUD_LOCAL = BIN_DIR / "ksud"
 KERNELSU_APK = BIN_DIR / "KernelSU_v3.2.4_32457-release.apk"
 KSUD_REMOTE = "/data/local/tmp/ksud"
 KSU_LOG = "/sdcard/ksulog.txt"
+KERNELSU_PACKAGE = "me.weishu.kernelsu"
+KSU_UI_XML = "/sdcard/ksu-ui.xml"
 
 
 @dataclass
@@ -57,6 +59,38 @@ class App:
             print("(预览模式，不执行)")
             return 0
         return subprocess.run(args, check=False).returncode
+
+    def capture_run(self, args: list[str], label: str | None = None, force_execute: bool | None = None) -> str:
+        execute = self.execute if force_execute is None else force_execute
+        if label:
+            print(f"\n[{label}]")
+        print_cmd(args)
+        if not execute:
+            print("(预览模式，不执行)")
+            return ""
+        result = subprocess.run(args, check=False, capture_output=True, text=True)
+        output = (result.stdout or "") + (result.stderr or "")
+        if output.strip():
+            print(output.rstrip())
+        if result.returncode != 0:
+            raise RuntimeError(f"命令执行失败，退出码：{result.returncode}")
+        return output.strip()
+
+    def capture_run_no_fail(self, args: list[str], label: str | None = None) -> tuple[int, str]:
+        if label:
+            print(f"\n[{label}]")
+        print_cmd(args)
+        if not self.execute:
+            print("(预览模式，不执行)")
+            return 0, ""
+        result = subprocess.run(args, check=False, capture_output=True, text=True)
+        output = (result.stdout or "") + (result.stderr or "")
+        if output.strip():
+            print(output.rstrip())
+        return result.returncode, output.strip()
+
+    def check_shell_output(self, command: str, label: str) -> str:
+        return self.capture_run(self.adb_args(["shell", command]), label)
 
     def adb_args(self, rest: list[str]) -> list[str]:
         if self.adb_serial:
@@ -205,7 +239,27 @@ class App:
         print("\n这一步会把仓库里的 KernelSU 管理器 APK 安装到手机。")
         if not self.adb_serial:
             self.choose_adb_device()
+        if self.execute and self.is_package_installed(KERNELSU_PACKAGE):
+            print("KernelSU 管理器已经安装，跳过安装。")
+            self.open_kernelsu_manager()
+            return
         self.guarded_run(self.adb_args(["install", "-r", str(KERNELSU_APK)]), "安装 KernelSU 管理器")
+        self.open_kernelsu_manager()
+
+    def is_package_installed(self, package_name: str) -> bool:
+        output = self.capture_run(
+            self.adb_args(["shell", f"pm path {package_name} 2>/dev/null"]),
+            f"检查 {package_name} 是否已安装",
+        )
+        return package_name in output
+
+    def open_kernelsu_manager(self) -> None:
+        if not self.adb_serial:
+            self.choose_adb_device()
+        self.guarded_run(
+            self.adb_args(["shell", "monkey", "-p", KERNELSU_PACKAGE, "-c", "android.intent.category.LAUNCHER", "1"]),
+            "打开 KernelSU 管理器",
+        )
 
     def reboot_bootloader(self) -> None:
         if not self.adb_serial:
@@ -246,7 +300,25 @@ class App:
 
     def wait_for_adb(self) -> None:
         self.guarded_run(self.adb_args(["wait-for-device"]), "等待 ADB 连接")
-        self.guarded_run(self.adb_args(["shell", "getenforce"]), "查看当前 SELinux 状态")
+        self.ensure_selinux_permissive()
+
+    def ensure_selinux_permissive(self) -> None:
+        state = self.get_selinux_state("查看当前 SELinux 状态")
+        if not self.execute:
+            return
+        if "Permissive" not in state:
+            raise RuntimeError(
+                "当前 SELinux 不是 Permissive，MQSAS/KernelSU late-load 不能继续。"
+                "请重新进入 fastboot，并在菜单 12 里换一个 OEM 命令后再执行注入步骤。"
+            )
+
+    def get_selinux_state(self, label: str = "查看 SELinux") -> str:
+        return self.capture_run(self.adb_args(["shell", "getenforce"]), label)
+
+    def is_selinux_permissive(self) -> bool:
+        if not self.execute:
+            return False
+        return "Permissive" in self.get_selinux_state("检查当前 SELinux 是否已是 Permissive")
 
     def start_kernelsu(self) -> None:
         if not KSUD_LOCAL.exists():
@@ -257,26 +329,66 @@ class App:
         print("\n这一步会把 ksud 推送到 /data/local/tmp/，然后通过 MQSAS 执行 late-load。")
         if not self.adb_serial:
             self.choose_adb_device()
+        self.ensure_selinux_permissive()
         self.guarded_run(self.adb_args(["push", str(KSUD_LOCAL), KSUD_REMOTE]), "推送 ksud")
         self.guarded_run(self.adb_args(["shell", "chmod", "777", KSUD_REMOTE]), "给 ksud 执行权限")
+        self.guarded_run(self.adb_args(["shell", f"rm -f {KSU_LOG}"]), "清理旧 KernelSU 日志")
         self.guarded_run(
             self.adb_args(build_kernelsu_late_load_args(KSUD_REMOTE, KSU_LOG, 60)[1:]),
             "通过 MQSAS 启动 KernelSU late-load",
         )
         self.guarded_run(self.adb_args(["shell", f"cat {KSU_LOG} 2>/dev/null"]), "读取 KernelSU 日志")
-        print("\n请打开手机上的 KernelSU 管理器。如果弹出 Shell 授权，请允许。")
+        self.open_kernelsu_manager()
+        print("\n我已经尝试打开 KernelSU 管理器。如果手机上弹出 Shell 授权，请允许。")
+
+    def read_kernelsu_ui(self) -> str:
+        self.open_kernelsu_manager()
+        self.guarded_run(self.adb_args(["shell", f"uiautomator dump {KSU_UI_XML} >/dev/null"]), "读取 KernelSU 界面文本")
+        return self.capture_run(self.adb_args(["shell", f"cat {KSU_UI_XML} 2>/dev/null"]), "分析 KernelSU 界面")
 
     def verify_root(self) -> None:
         print("\n开始验证 SELinux 和 root 权限。")
         if not self.adb_serial:
             self.choose_adb_device()
-        self.guarded_run(self.adb_args(["shell", "getenforce"]), "查看 SELinux")
-        self.guarded_run(
-            self.adb_args(build_service_args("whoami", "", "/sdcard/mqsas-whoami.txt", 60)[1:]),
-            "通过 MQSAS 执行 whoami",
-        )
-        self.guarded_run(self.adb_args(["shell", "cat /sdcard/mqsas-whoami.txt 2>/dev/null"]), "读取 MQSAS 输出")
-        self.guarded_run(self.adb_args(["shell", "su -c whoami"]), "检查 KernelSU 的 su")
+        state = self.get_selinux_state("查看 SELinux")
+        if "Permissive" in state or not self.execute:
+            self.guarded_run(
+                self.adb_args(build_service_args("whoami", "", "/sdcard/mqsas-whoami.txt", 60)[1:]),
+                "通过 MQSAS 执行 whoami",
+            )
+            self.guarded_run(self.adb_args(["shell", "cat /sdcard/mqsas-whoami.txt 2>/dev/null"]), "读取 MQSAS 输出")
+        else:
+            print("SELinux 当前是 Enforcing；这不等于 root 失败，继续用 KernelSU / su 多路检测。")
+
+        checks = [
+            ("检查 PATH 里的 su", "command -v su 2>/dev/null || true"),
+            ("检查 KernelSU su 路径", "ls -l /data/adb/ksu/bin/su /debug_ramdisk/su /system/bin/su /system/xbin/su 2>/dev/null || true"),
+            ("su -c id", "su -c id"),
+            ("/data/adb/ksu/bin/su -c id", "/data/adb/ksu/bin/su -c id"),
+            ("/debug_ramdisk/su -c id", "/debug_ramdisk/su -c id"),
+            ("/system/bin/su -c id", "/system/bin/su -c id"),
+            ("ksud --help", f"{KSUD_REMOTE} --help"),
+            ("ksud version", f"{KSUD_REMOTE} --version"),
+        ]
+
+        root_ok = False
+        ui_output = self.read_kernelsu_ui()
+        if "工作中" in ui_output and ("LKM" in ui_output or "越狱模式" in ui_output):
+            print("\nKernelSU 管理器显示：工作中 <LKM> / 越狱模式。")
+            root_ok = True
+
+        for label, command in checks:
+            _, output = self.capture_run_no_fail(self.adb_args(["shell", command]), label)
+            lowered = output.lower()
+            if "uid=0" in lowered or lowered.strip() == "root" or "uid=0(root)" in lowered:
+                root_ok = True
+
+        if root_ok:
+            print("\n验证结果：检测到 root 权限可用。")
+        else:
+            print("\n验证结果：没有从 ADB shell 检测到可用 root。")
+            print("如果 KernelSU 管理器里已经显示 root，请确认是否给 Shell 授权；")
+            print("也可能是 su 不在 PATH，需要用上面输出里的实际 su 路径执行。")
 
     def restore_enforcing(self) -> None:
         print("\n这一步会尝试把 SELinux 恢复为 Enforcing。需要 su 已经可用。")
@@ -288,10 +400,10 @@ class App:
     def full_flow(self) -> None:
         print("\n完整向导流程：")
         print("1. 检查 adb / fastboot 和手机信息")
-        print("2. 安装 KernelSU 管理器 APK")
-        print("3. 重启到 fastboot")
-        print("4. 注入 androidboot.selinux=permissive")
-        print("5. 开机后执行 KernelSU late-load")
+        print("2. 如果 KernelSU 管理器已安装则跳过安装")
+        print("3. 如果当前已是 Permissive，则跳过 fastboot 注入")
+        print("4. 否则重启到 fastboot 并注入 androidboot.selinux=permissive")
+        print("5. 执行 KernelSU late-load")
         print("6. 验证 root")
         print("\n不会刷写 boot、init_boot、abl、efisp 等分区。")
         if self.execute and not self.ask_yes("开始完整执行吗？"):
@@ -299,12 +411,17 @@ class App:
         self.preflight()
         self.detect_device()
         self.install_kernelsu_manager()
-        self.reboot_bootloader()
-        input("\n手机进入 fastboot 画面后，按 Enter 继续...")
-        self.select_fastboot_after_reboot()
-        self.boot_permissive()
-        input("\nAndroid 开机并允许 ADB 后，按 Enter 继续...")
-        self.wait_for_adb()
+
+        if self.is_selinux_permissive():
+            print("\n当前已经是 Permissive，跳过重启 fastboot 和注入步骤。")
+        else:
+            self.reboot_bootloader()
+            input("\n手机进入 fastboot 画面后，按 Enter 继续...")
+            self.select_fastboot_after_reboot()
+            self.boot_permissive()
+            input("\nAndroid 开机并允许 ADB 后，按 Enter 继续...")
+            self.wait_for_adb()
+
         self.start_kernelsu()
         input("\n检查手机上的 KernelSU 管理器后，按 Enter 继续验证...")
         self.verify_root()
@@ -337,7 +454,8 @@ class App:
             print("10. 验证 root")
             print("11. 恢复 SELinux Enforcing")
             print("12. 选择 OEM 命令")
-            print("13. 切换预览模式 / 真实执行")
+            print("13. 打开 KernelSU 管理器")
+            print("14. 切换预览模式 / 真实执行")
             print("0. 退出")
 
             try:
@@ -370,6 +488,8 @@ class App:
                 elif choice == "12":
                     self.choose_oem_command()
                 elif choice == "13":
+                    self.open_kernelsu_manager()
+                elif choice == "14":
                     if not self.execute:
                         print("\n真实执行模式会直接调用 adb / fastboot。你选择菜单项就表示同意执行该步骤。")
                         self.execute = self.ask_yes("切换到真实执行模式吗？")

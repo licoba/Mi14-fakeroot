@@ -68,6 +68,8 @@ python .\scripts\one_click_tui.py --dry-run
 
 真实执行模式下，脚本不会再对每条 adb/fastboot 命令逐个确认。
 
+完整向导支持从中途继续：如果当前已经是 `Permissive`，会跳过重启 fastboot 和注入步骤，直接继续 KernelSU late-load；如果 KernelSU 管理器已经安装，也会跳过安装。Android 开机后如果 `getenforce` 不是 `Permissive`，会停止 KernelSU late-load，避免继续执行必定失败的 MQSAS 步骤；这时请在菜单里切换备用 OEM 命令后重新注入。
+
 ## 单独脚本只读检测
 
 也可以不用 TUI，单独运行脚本：
@@ -120,7 +122,7 @@ python .\scripts\02_boot_permissive.py --oem-command set-hw-fence-value --execut
 
 ## 按 Mobile01 流程启动 KernelSU 临时 root
 
-仓库已经内置 KernelSU 管理器 APK 和 `bin/ksud`。TUI 里可以直接选择“安装 KernelSU 管理器 APK”和“启动 KernelSU late-load”。
+仓库已经内置 KernelSU 管理器 APK 和 `bin/ksud`。TUI 里可以直接选择“安装 KernelSU 管理器 APK”和“启动 KernelSU late-load”。安装和 late-load 后，TUI 会尝试自动打开 KernelSU 管理器。
 
 先 dry-run：
 
@@ -159,8 +161,10 @@ python .\scripts\04_check_temp_root.py --execute
 - `adb shell getenforce`
 - 通过 `miui.mqsas.IMQSNative` 执行 `whoami`
 - 读取 `/sdcard/mqsas-whoami.txt`
+- 多路检查 `su` / KernelSU 常见路径，例如 `/data/adb/ksu/bin/su`
+- 读取 KernelSU 管理器界面；如果显示“工作中 <LKM> / 越狱模式”，也判定 KernelSU 已加载成功
 
-如果输出文件里是 `root`，说明临时 root-like 命令执行成功。
+如果任一路输出包含 `uid=0` 或 `root`，说明 root 可用。`getenforce` 回到 `Enforcing` 不一定代表 root 失败，因为 KernelSU late-load 后可能已经接管 root，再恢复 SELinux 状态。
 
 ## 执行自定义 root 命令
 
@@ -173,7 +177,7 @@ python .\scripts\03_mqsas_root_command.py --command whoami --output /sdcard/mqsa
 示例：执行带参数命令：
 
 ```shell
-python .\scripts\03_mqsas_root_command.py --command id --arguments "" --output /sdcard/mqsas-id.txt --execute
+python .\scripts\03_mqsas_root_command.py --command id --output /sdcard/mqsas-id.txt --execute
 ```
 
 命令模板来自公开资料：
@@ -186,7 +190,9 @@ adb shell service call miui.mqsas.IMQSNative 21 i32 1 s16 "<命令>" i32 1 s16 "
 
 - `miui.mqsas.IMQSNative doesn't exist`：可能该机型/版本没有服务，或者 USB 调试授权不完整，或者系统已修复。
 - `getenforce` 仍是 `Enforcing`：fastboot 注入没有生效，试备用 OEM 命令名，或说明补丁已修。
-- `whoami` 输出不是 `root`：MQSAS 链路不可用或 SELinux 没有 permissive。
+- `service: unknown option /sdcard/...`：旧版本脚本的 MQSAS 空参数引用问题；现在已改成单条远端 shell 命令。更新后重新执行即可。
+- `whoami` 输出不是 `root`：MQSAS 链路不可用或 SELinux 没有 permissive；如果 KernelSU 已生效，以 TUI 的多路 root 检测结果为准。
+- `su: inaccessible or not found`：`su` 可能不在 PATH，TUI 会继续尝试 `/data/adb/ksu/bin/su`、`/debug_ramdisk/su` 等常见路径。
 - 执行后没有输出文件：检查输出路径是否可写，先用 `/sdcard/...`。
 
 ## 恢复
