@@ -164,7 +164,7 @@ python .\scripts\04_check_temp_root.py --execute
 - 多路检查 `su` / KernelSU 常见路径，例如 `/data/adb/ksu/bin/su`
 - 读取 KernelSU 管理器界面；如果显示“工作中 <LKM> / 越狱模式”，也判定 KernelSU 已加载成功
 
-如果任一路输出包含 `uid=0` 或 `root`，说明 root 可用。`getenforce` 回到 `Enforcing` 不一定代表 root 失败，因为 KernelSU late-load 后可能已经接管 root，再恢复 SELinux 状态。
+如果 KernelSU 界面显示“工作中 <LKM> / 越狱模式”，说明 KernelSU 框架已加载。若同时任一路 `su` 输出包含 `uid=0` 或 `root`，说明 ADB shell root 也可用。`getenforce` 回到 `Enforcing` 不一定代表 root 失败，因为 KernelSU late-load 后可能已经接管 root，再恢复 SELinux 状态。
 
 ## 执行自定义 root 命令
 
@@ -193,6 +193,7 @@ adb shell service call miui.mqsas.IMQSNative 21 i32 1 s16 "<命令>" i32 1 s16 "
 - `service: unknown option /sdcard/...`：旧版本脚本的 MQSAS 空参数引用问题；现在已改成单条远端 shell 命令。更新后重新执行即可。
 - `whoami` 输出不是 `root`：MQSAS 链路不可用或 SELinux 没有 permissive；如果 KernelSU 已生效，以 TUI 的多路 root 检测结果为准。
 - `su: inaccessible or not found`：`su` 可能不在 PATH，TUI 会继续尝试 `/data/adb/ksu/bin/su`、`/debug_ramdisk/su` 等常见路径。
+- KernelSU 显示已工作但 ADB shell 没有 root：通常是 KernelSU 的“超级用户”页里没有给 Shell/ADB shell 授权，或者当前环境没有把 `su` 暴露到 ADB shell 的常见路径。
 - 执行后没有输出文件：检查输出路径是否可写，先用 `/sdcard/...`。
 
 ## 恢复

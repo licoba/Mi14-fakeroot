@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,7 +69,14 @@ class App:
         if not execute:
             print("(预览模式，不执行)")
             return ""
-        result = subprocess.run(args, check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         output = (result.stdout or "") + (result.stderr or "")
         if output.strip():
             print(output.rstrip())
@@ -83,7 +91,14 @@ class App:
         if not self.execute:
             print("(预览模式，不执行)")
             return 0, ""
-        result = subprocess.run(args, check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            args,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         output = (result.stdout or "") + (result.stderr or "")
         if output.strip():
             print(output.rstrip())
@@ -105,7 +120,14 @@ class App:
 
     def list_adb_devices(self) -> list[Device]:
         require_tool("adb")
-        result = subprocess.run(["adb", "devices", "-l"], check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            ["adb", "devices", "-l"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         devices: list[Device] = []
         for line in result.stdout.splitlines()[1:]:
             line = line.strip()
@@ -120,7 +142,14 @@ class App:
 
     def list_fastboot_devices(self) -> list[Device]:
         require_tool("fastboot")
-        result = subprocess.run(["fastboot", "devices"], check=False, capture_output=True, text=True)
+        result = subprocess.run(
+            ["fastboot", "devices"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         devices: list[Device] = []
         for line in result.stdout.splitlines():
             parts = line.split()
@@ -343,6 +372,8 @@ class App:
 
     def read_kernelsu_ui(self) -> str:
         self.open_kernelsu_manager()
+        if self.execute:
+            time.sleep(1)
         self.guarded_run(self.adb_args(["shell", f"uiautomator dump {KSU_UI_XML} >/dev/null"]), "读取 KernelSU 界面文本")
         return self.capture_run(self.adb_args(["shell", f"cat {KSU_UI_XML} 2>/dev/null"]), "分析 KernelSU 界面")
 
@@ -371,24 +402,32 @@ class App:
             ("ksud version", f"{KSUD_REMOTE} --version"),
         ]
 
-        root_ok = False
+        ksu_loaded = False
+        shell_root_ok = False
         ui_output = self.read_kernelsu_ui()
         if "工作中" in ui_output and ("LKM" in ui_output or "越狱模式" in ui_output):
             print("\nKernelSU 管理器显示：工作中 <LKM> / 越狱模式。")
-            root_ok = True
+            ksu_loaded = True
 
         for label, command in checks:
             _, output = self.capture_run_no_fail(self.adb_args(["shell", command]), label)
             lowered = output.lower()
             if "uid=0" in lowered or lowered.strip() == "root" or "uid=0(root)" in lowered:
-                root_ok = True
+                shell_root_ok = True
 
-        if root_ok:
-            print("\n验证结果：检测到 root 权限可用。")
+        if ksu_loaded and shell_root_ok:
+            print("\n验证结果：KernelSU 已加载，ADB shell root 权限也可用。")
+        elif ksu_loaded:
+            print("\n验证结果：KernelSU 已加载成功，但 ADB shell 暂未检测到 su 权限。")
+            print("这通常表示 Shell 还没有在 KernelSU 的“超级用户”页里授权，")
+            print("或者当前环境没有把 su 暴露到 ADB shell 的常见路径。")
+            print("请在 KernelSU 管理器的“超级用户”页确认 Shell/ADB shell 是否已允许。")
+        elif shell_root_ok:
+            print("\n验证结果：检测到 ADB shell root 权限可用。")
         else:
-            print("\n验证结果：没有从 ADB shell 检测到可用 root。")
-            print("如果 KernelSU 管理器里已经显示 root，请确认是否给 Shell 授权；")
-            print("也可能是 su 不在 PATH，需要用上面输出里的实际 su 路径执行。")
+            print("\n验证结果：没有检测到 KernelSU 已加载，也没有检测到 ADB shell root。")
+            print("如果手机界面实际显示“工作中 <LKM> / 越狱模式”，请重新执行验证；")
+            print("如果仍失败，优先检查 KernelSU 的“超级用户”授权状态。")
 
     def restore_enforcing(self) -> None:
         print("\n这一步会尝试把 SELinux 恢复为 Enforcing。需要 su 已经可用。")
